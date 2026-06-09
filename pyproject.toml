@@ -1,0 +1,15 @@
+[project]
+name = "trimul-advisor"
+version = "0.1.0"
+description = "Advisor-worker agent pair for iterative TriMul kernel optimization on H100"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.5.0",
+    "langchain-openai>=0.3.0",
+    "langchain-anthropic>=0.3.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.32.0",
+    "matplotlib>=3.9.0",
+    "modal>=0.73.0",
+]
