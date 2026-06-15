@@ -1,5 +1,5 @@
 """
-Compare openevolve vs advisor (no refresh) vs advisor-refresh runs.
+Compare openevolve vs advisor (no refresh) vs advisor-refresh vs evox runs.
 Marks epoch refresh boundary with a vertical line.
 """
 import matplotlib
@@ -9,7 +9,7 @@ import matplotlib.ticker as ticker
 import csv
 
 # ── Advisor (no refresh) data ─────────────────────────────────────────────────
-ADV_TSV = "/workspace/trimul-advisor/trimul/runs/20260611_232826_trimul_starting_point/results.tsv"
+ADV_TSV = "/workspace/trimul-advisor/trimul/runs/20260609_012417_trimul_starting_point/results.tsv"
 adv_iters, adv_times, adv_kinds = [], [], []
 with open(ADV_TSV) as f:
     reader = csv.DictReader(f, delimiter="\t")
@@ -63,6 +63,29 @@ for it, t, k in epoch1_rows + epoch2_rows:
     refresh_times.append(t)
     refresh_kinds.append(k)
 
+# ── EvoX data ────────────────────────────────────────────────────────────────
+# From trimul-evox/plot_run.py — skydiscover run1, 25 iterations
+evox_raw = [
+    (1,  9344.256,  "keep"),
+    (3,  9356.484,  "discard"),
+    (4,  9291.110,  "keep"),
+    (5,  9329.417,  "discard"),
+    (6,  9266.186,  "keep"),
+    (7,  9302.989,  "discard"),
+    (8,  9281.608,  "discard"),
+    (9,  6572.176,  "keep"),
+    (10, 0.0,       "fail"),
+    (13, 6562.477,  "keep"),
+    (14, 0.0,       "fail"),
+    (17, 6352.167,  "keep"),
+    (18, 6480.952,  "discard"),
+    (21, 6428.371,  "discard"),
+    (23, 6377.658,  "discard"),
+]
+evox_iters = [r[0] for r in evox_raw]
+evox_times = [r[1] for r in evox_raw]
+evox_kinds = ["crash" if r[2] == "fail" else r[2] for r in evox_raw]
+
 # ── OpenEvolve data ───────────────────────────────────────────────────────────
 # Extracted from trimul_kernel/openevolve_runs/run1/logs/*.log
 # Iterations absent from this list had no valid geomean score (correctness failures)
@@ -110,17 +133,19 @@ def best_step(iters, times, kinds):
             by.append(best)
     return bx, by
 
-adv_bx, adv_by = best_step(adv_iters,     adv_times,     adv_kinds)
-ref_bx, ref_by = best_step(refresh_iters, refresh_times, refresh_kinds)
-oe_bx,  oe_by  = best_step(oe_iters,      oe_times,      oe_kinds)
+adv_bx,  adv_by  = best_step(adv_iters,     adv_times,     adv_kinds)
+ref_bx,  ref_by  = best_step(refresh_iters, refresh_times, refresh_kinds)
+oe_bx,   oe_by   = best_step(oe_iters,      oe_times,      oe_kinds)
+evox_bx, evox_by = best_step(evox_iters,    evox_times,    evox_kinds)
 
-adv_best = min(t for t, k in zip(adv_times, adv_kinds) if k == "keep")
-ref_best = min(t for t, k in zip(refresh_times, refresh_kinds) if k == "keep" and t > 0)
-oe_best  = min(oe_by) if oe_by else float("inf")
+adv_best  = min(t for t, k in zip(adv_times, adv_kinds) if k == "keep")
+ref_best  = min(t for t, k in zip(refresh_times, refresh_kinds) if k == "keep" and t > 0)
+oe_best   = min(oe_by) if oe_by else float("inf")
+evox_best = min(evox_by) if evox_by else float("inf")
 
 # ── Y-axis (negative latency, clip outliers) ──────────────────────────────────
 CLIP_US = 20000.0
-all_valid = [t for t in adv_times + refresh_times + oe_times if 0 < t <= CLIP_US]
+all_valid = [t for t in adv_times + refresh_times + oe_times + evox_times if 0 < t <= CLIP_US]
 y_hi = -(min(all_valid) * 0.82)
 y_lo = -(CLIP_US * 1.08)
 
@@ -174,8 +199,21 @@ if ref_dx:
 if ref_bx:
     ax.step(ref_bx, [-t for t in ref_by], where="post", color="#a855f7", linewidth=2, label="advisor-refresh best", zorder=6)
 
+# EvoX — orange
+evox_kx = [it for it, k in zip(evox_iters, evox_kinds) if k == "keep"]
+evox_ky = [ny(evox_times[i]) for i, k in enumerate(evox_kinds) if k == "keep"]
+evox_dx = [it for it, k in zip(evox_iters, evox_kinds) if k == "discard"]
+evox_dy = [ny(evox_times[i]) for i, k in enumerate(evox_kinds) if k == "discard"]
+evox_cx = [it for it, k in zip(evox_iters, evox_kinds) if k == "crash"]
+if evox_kx:
+    ax.scatter(evox_kx, evox_ky, c="#f97316", s=70, zorder=5, edgecolors="white", linewidths=0.5, label="evox keep")
+if evox_dx:
+    ax.scatter(evox_dx, evox_dy, c="#fed7aa", s=40, zorder=4, edgecolors="white", linewidths=0.3, alpha=0.8, label="evox discard")
+if evox_bx:
+    ax.step(evox_bx, [-t for t in evox_by], where="post", color="#f97316", linewidth=2, label="evox best", zorder=6)
+
 # Crashes (all series)
-all_cx = oe_cx + adv_cx + ref_cx
+all_cx = oe_cx + adv_cx + ref_cx + evox_cx
 if all_cx:
     ax.scatter(all_cx, [y_lo] * len(all_cx), c="#fbbf24", s=40, zorder=3,
                marker="x", linewidths=1.5, label=f"crash ({len(all_cx)})", alpha=0.8)
@@ -192,11 +230,12 @@ ax.set_ylabel("Negative Latency (-μs)", fontsize=12)
 ax.grid(True, alpha=0.3)
 
 # Legend above the plot
-ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.01), ncol=4,
+ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.01), ncol=5,
           framealpha=0.9, fontsize=10, borderaxespad=0)
 
 # Best-time records above the plot (figure-level text)
 fig.text(0.5, 0.92,
+         f"EvoX best: {evox_best:.2f} μs    |    "
          f"OpenEvolve best: {oe_best:.2f} μs    |    "
          f"Advisor best: {adv_best:.2f} μs    |    "
          f"Advisor-refresh best: {ref_best:.2f} μs",
@@ -204,7 +243,7 @@ fig.text(0.5, 0.92,
          bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="#a855f7", alpha=0.9))
 
 # Title
-fig.text(0.5, 0.995, "openevolve vs advisor vs advisor-refresh — trimul",
+fig.text(0.5, 0.995, "evox vs openevolve vs advisor vs advisor-refresh — trimul",
          ha="center", va="top", fontsize=14, fontweight="bold")
 
 # LLM call counter — bottom right (advisor-refresh only)
