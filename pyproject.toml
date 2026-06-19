@@ -1,7 +1,7 @@
 [project]
-name = "trimul-advisor"
+name = "attn-bwd-advisor"
 version = "0.1.0"
-description = "Advisor-worker agent pair for iterative TriMul kernel optimization on H100"
+description = "Advisor-worker agent pair for iterative attention-backward kernel optimization on B200"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

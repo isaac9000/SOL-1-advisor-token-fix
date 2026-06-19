@@ -1,14 +1,14 @@
 """
-Advisor-Worker agentic loop for TriMul kernel optimization.
+Advisor-Worker agentic loop for attention-backward kernel optimization.
 
 Direct Anthropic SDK implementation — no LangGraph or deepagents.
 Evaluation runs outside the loop: the orchestrator calls run_eval.py
 after each worker turn and handles all logging.
 
 Usage:
-    uv run trimul/agent.py
-    uv run trimul/agent.py --iterations 20 --baseline trimul/starting_point.py
-    uv run trimul/agent.py --advisor-model claude-opus-4-8 --worker-model claude-sonnet-4-6
+    uv run attn_bwd/agent.py
+    uv run attn_bwd/agent.py --iterations 20 --baseline attn_bwd/starting_point.py
+    uv run attn_bwd/agent.py --advisor-model claude-opus-4-7 --worker-model claude-sonnet-4-6
 """
 
 import argparse
@@ -35,10 +35,10 @@ from tools import (
     set_llm_call_count,
 )
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(PROJECT_DIR)
+PROJECT_DIR    = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT      = os.path.dirname(PROJECT_DIR)
 SUBMISSION_FILE = os.path.join(PROJECT_DIR, "submission.py")
-RESULTS_FILE = os.path.join(PROJECT_DIR, "results.json")
+RESULTS_FILE   = os.path.join(PROJECT_DIR, "results.json")
 
 
 def load_prompt(filename: str) -> str:
@@ -135,10 +135,7 @@ def run_agent_turn(
     label: str,
     max_tokens: int = 8096,
 ) -> tuple[str, int]:
-    """Run one agent turn to completion with tool-calling loop.
-
-    Appends all messages to history in place. Returns (final_text, n_llm_calls).
-    """
+    """Run one agent turn to completion with tool-calling loop."""
     n_calls = 0
 
     while True:
@@ -196,7 +193,8 @@ def _is_transient_error(exc: Exception) -> bool:
     if isinstance(exc, (anthropic.APITimeoutError, anthropic.APIConnectionError)):
         return True
     msg = str(exc).lower()
-    return any(kw in msg for kw in ("timeout", "timed out", "connection reset", "read operation timed out"))
+    return any(kw in msg for kw in ("timeout", "timed out", "connection reset",
+                                     "read operation timed out"))
 
 
 def run_agent_turn_retrying(
@@ -209,7 +207,7 @@ def run_agent_turn_retrying(
     max_attempts: int = 3,
     base_delay: float = 15.0,
 ) -> tuple[str, int]:
-    """Like run_agent_turn but retries transient API errors, restoring history on failure."""
+    """Like run_agent_turn but retries transient API errors."""
     last_exc: Exception | None = None
     total_calls = 0
 
@@ -217,7 +215,8 @@ def run_agent_turn_retrying(
         if attempt > 0:
             delay = base_delay * (2 ** (attempt - 1))
             print(
-                f"  [{label}] Retrying (attempt {attempt + 1}/{max_attempts}) in {delay:.0f}s...",
+                f"  [{label}] Retrying (attempt {attempt + 1}/{max_attempts}) "
+                f"in {delay:.0f}s...",
                 flush=True,
             )
             time.sleep(delay)
@@ -249,7 +248,7 @@ def run_agent_turn_retrying(
 
 
 def evaluate_submission() -> tuple[float, str]:
-    """Run run_eval.py and return (geomean_us, error_msg). geomean_us=0 on any failure."""
+    """Run run_eval.py and return (geomean_us, error_msg). geomean_us=0 on failure."""
     print("[evaluator] running run_eval.py...", flush=True)
     try:
         ret = subprocess.run(
@@ -267,11 +266,11 @@ def evaluate_submission() -> tuple[float, str]:
             md = json.load(f)
         text = md if isinstance(md, str) else ""
 
-        # Explicit correctness failure check — takes priority over everything else
         if "> ❌ Testing failed" in text or "> ❌ Benchmarking failed" in text:
             err_m = re.search(r"## Error:\s*```\s*(.*?)\s*```", text, re.DOTALL)
             detail = err_m.group(1).strip()[:400] if err_m else ""
-            label = "Correctness check failed" if "> ❌ Testing failed" in text else "Benchmark correctness failed"
+            label = ("Correctness check failed" if "> ❌ Testing failed" in text
+                     else "Benchmark correctness failed")
             return 0.0, f"{label}. {detail}".strip()
 
         m = re.search(r"Geometric mean: ⏱ ([\d.]+)", text)
@@ -279,7 +278,8 @@ def evaluate_submission() -> tuple[float, str]:
             return float(m.group(1)), ""
 
         err_m = re.search(r"## Error:\s*```\s*(.*?)\s*```", text, re.DOTALL)
-        error = err_m.group(1).strip()[:500] if err_m else f"run_eval exited {ret.returncode}"
+        error = (err_m.group(1).strip()[:500] if err_m
+                 else f"run_eval exited {ret.returncode}")
         return 0.0, error
     except Exception as e:
         return 0.0, f"could not parse results.json: {e}"
@@ -291,7 +291,6 @@ def evaluate_submission() -> tuple[float, str]:
 
 
 def extract_hypothesis(worker_text: str) -> str:
-    """Extract a short description from the worker's implementation report."""
     m = re.search(r"Implemented:\s*(.+?)(?:\n|$)", worker_text)
     if m:
         return m.group(1).strip()[:200]
@@ -373,7 +372,8 @@ def print_checkpoint(
 
 
 def print_final_report(
-    total_iterations: int, actual_iterations: int, start_time: float, llm_call_count: int = 0
+    total_iterations: int, actual_iterations: int, start_time: float,
+    llm_call_count: int = 0,
 ) -> None:
     elapsed_min = (time.time() - start_time) / 60
     print(f"\n{'='*60}\n  FINAL REPORT\n{'='*60}")
@@ -393,7 +393,9 @@ def print_final_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Advisor-Worker TriMul Optimization Agent")
+    parser = argparse.ArgumentParser(
+        description="Advisor-Worker attn_bwd Optimization Agent"
+    )
     parser.add_argument("--iterations", "-n", type=int, default=20)
     parser.add_argument("--checkpoint-every", "-c", type=int, default=5)
     parser.add_argument("--baseline", "-b", default=None, help="Path to baseline file")
@@ -403,9 +405,9 @@ def main() -> None:
 
     load_dotenv(os.path.join(REPO_ROOT, ".env"))
 
-    default_model = os.environ.get("AUTORESEARCH_MODEL", "claude-opus-4-8")
-    advisor_model = args.advisor_model or default_model
-    worker_model = args.worker_model or default_model
+    default_model  = os.environ.get("AUTORESEARCH_MODEL", "claude-opus-4-7")
+    advisor_model  = args.advisor_model or default_model
+    worker_model   = args.worker_model or default_model
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("Error: ANTHROPIC_API_KEY not set")
@@ -420,7 +422,8 @@ def main() -> None:
         baseline_name = os.path.splitext(os.path.basename(baseline_path))[0]
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(PROJECT_DIR, "runs", f"{timestamp}_trimul_{baseline_name}")
+    run_dir = os.path.join(PROJECT_DIR, "runs",
+                           f"{timestamp}_attn_bwd_{baseline_name}")
     os.makedirs(run_dir, exist_ok=True)
     set_run_directory(run_dir)
 
@@ -430,15 +433,14 @@ def main() -> None:
     else:
         print("No baseline — using current submission.py.", flush=True)
 
-    client = anthropic.Anthropic()
+    client         = anthropic.Anthropic()
     advisor_system = load_prompt("advisor_prompt.md")
-    worker_system = load_prompt("worker_prompt.md")
+    worker_system  = load_prompt("worker_prompt.md")
 
-    # Persistent conversation histories accumulate across all iterations
     advisor_history: list = []
-    worker_history: list = []
+    worker_history: list  = []
 
-    print(f"Starting advisor-worker optimization loop")
+    print(f"Starting advisor-worker attn_bwd optimization loop")
     print(f"  Advisor model:  {advisor_model}")
     print(f"  Worker model:   {worker_model}")
     print(f"  Baseline:       {baseline_name}")
@@ -452,10 +454,9 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
-    start_time = time.time()
+    start_time   = time.time()
     current_best = float("inf")
 
-    # Evaluate baseline before the loop
     kickoff_note = ""
     if baseline_path:
         print(f"Benchmarking baseline '{baseline_name}'...", flush=True)
@@ -518,12 +519,14 @@ def main() -> None:
                 ),
             })
             proposal, advisor_calls = run_agent_turn_retrying(
-                client, advisor_history, advisor_system, ADVISOR_TOOLS, advisor_model, label="advisor"
+                client, advisor_history, advisor_system, ADVISOR_TOOLS,
+                advisor_model, label="advisor",
             )
             total_llm_calls += advisor_calls
             set_llm_call_count(total_llm_calls)
             all_proposals.append((iteration, proposal))
-            print(f"\n[advisor proposal]\n{'-'*40}\n{proposal[:1000]}\n{'-'*40}\n", flush=True)
+            print(f"\n[advisor proposal]\n{'-'*40}\n{proposal[:1000]}\n{'-'*40}\n",
+                  flush=True)
             save_proposals(run_dir, all_proposals)
 
             # ── WORKER ───────────────────────────────────────────────────
@@ -549,7 +552,8 @@ def main() -> None:
             kickoff_note = ""
 
             worker_text, worker_calls = run_agent_turn_retrying(
-                client, worker_history, worker_system, WORKER_TOOLS, worker_model, label="worker"
+                client, worker_history, worker_system, WORKER_TOOLS,
+                worker_model, label="worker",
             )
             total_llm_calls += worker_calls
             set_llm_call_count(total_llm_calls)
@@ -581,7 +585,7 @@ def main() -> None:
             print(f"[evaluator] {time_us:.2f} µs — {status}", flush=True)
 
             if status == "crash":
-                best_path = os.path.join(run_dir, "best_submission.py")
+                best_path   = os.path.join(run_dir, "best_submission.py")
                 restore_src = best_path if os.path.exists(best_path) else snapshot_path
                 if os.path.exists(restore_src):
                     shutil.copy2(restore_src, SUBMISSION_FILE)

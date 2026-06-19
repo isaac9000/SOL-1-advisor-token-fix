@@ -1,4 +1,4 @@
-"""Shared state and tool implementations for the TriMul optimization loop."""
+"""Shared state and tool implementations for the attn_bwd optimization loop."""
 
 import os
 from datetime import datetime, timezone
@@ -87,11 +87,11 @@ def _update_plot():
         return
 
     iterations = [r["agent_iteration"] for r in rows]
-    times = [r["time_us"] if r["time_us"] > 0 else None for r in rows]
-    statuses = [r["status"] for r in rows]
+    times      = [r["time_us"] if r["time_us"] > 0 else None for r in rows]
+    statuses   = [r["status"] for r in rows]
 
     best_so_far = float("inf")
-    best_times = []
+    best_times  = []
     for r in rows:
         if r["time_us"] > 0 and r["time_us"] < best_so_far:
             best_so_far = r["time_us"]
@@ -99,33 +99,43 @@ def _update_plot():
 
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    keep_x = [i for i, s, t in zip(iterations, statuses, times) if s == "keep" and t]
-    keep_y = [-t for s, t in zip(statuses, times) if s == "keep" and t]
+    keep_x    = [i for i, s, t in zip(iterations, statuses, times) if s == "keep" and t]
+    keep_y    = [-t for s, t in zip(statuses, times) if s == "keep" and t]
     discard_x = [i for i, s, t in zip(iterations, statuses, times) if s == "discard" and t]
     discard_y = [-t for s, t in zip(statuses, times) if s == "discard" and t]
-    crash_x = [i for i, s in zip(iterations, statuses) if s == "crash"]
+    crash_x   = [i for i, s in zip(iterations, statuses) if s == "crash"]
 
     all_valid = [-t for t in times if t and t > 0]
     y_lo = min(all_valid) * 1.15 if all_valid else -100
     y_hi = max(all_valid) * 0.85 if all_valid else 0
 
     if keep_x:
-        ax.scatter(keep_x, keep_y, c="#22c55e", s=60, zorder=5, label="keep", edgecolors="white", linewidths=0.5)
+        ax.scatter(keep_x, keep_y, c="#22c55e", s=60, zorder=5, label="keep",
+                   edgecolors="white", linewidths=0.5)
     if discard_x:
-        ax.scatter(discard_x, discard_y, c="#ef4444", s=40, zorder=4, label="discard", edgecolors="white", linewidths=0.5, alpha=0.7)
+        ax.scatter(discard_x, discard_y, c="#ef4444", s=40, zorder=4, label="discard",
+                   edgecolors="white", linewidths=0.5, alpha=0.7)
     if crash_x:
-        ax.scatter(crash_x, [y_lo] * len(crash_x), c="#fbbf24", s=25, zorder=3, label=f"crash ({len(crash_x)})", marker="x", alpha=0.6)
+        ax.scatter(crash_x, [y_lo] * len(crash_x), c="#fbbf24", s=25, zorder=3,
+                   label=f"crash ({len(crash_x)})", marker="x", alpha=0.6)
 
     valid_best = [(i, -bt) for i, bt in zip(iterations, best_times) if bt is not None]
     if valid_best:
         bx, by = zip(*valid_best)
-        ax.step(bx, by, where="post", color="#3b82f6", linewidth=2, label="best time", zorder=6)
+        ax.step(bx, by, where="post", color="#3b82f6", linewidth=2,
+                label="best time", zorder=6)
+
+    # Reference lines
+    ax.axhline(-756, color="#9ca3af", linewidth=1, linestyle="--", alpha=0.6,
+               label="baseline ≈756 µs")
+    ax.axhline(-82,  color="#10b981", linewidth=1, linestyle="--", alpha=0.6,
+               label="SOL ≈82 µs")
 
     ax.set_ylim(y_lo * 1.05, y_hi)
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1f"))
     ax.set_xlabel("Iteration #", fontsize=12)
     ax.set_ylabel("Negative Latency (-μs)", fontsize=12)
-    ax.set_title("GPU MODE trimul — Autoresearch Progress", fontsize=14, fontweight="bold")
+    ax.set_title("GPU MODE attn_bwd — Autoresearch Progress", fontsize=14, fontweight="bold")
     ax.legend(loc="upper right", framealpha=0.9)
     ax.grid(True, alpha=0.3)
 
@@ -134,7 +144,8 @@ def _update_plot():
             f"Best: {best_so_far:.2f} μs",
             xy=(0.02, 0.98), xycoords="axes fraction",
             fontsize=11, fontweight="bold", color="#3b82f6",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#3b82f6", alpha=0.9),
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor="#3b82f6", alpha=0.9),
         )
 
     ax.annotate(
@@ -142,7 +153,8 @@ def _update_plot():
         xy=(0.98, 0.02), xycoords="axes fraction",
         ha="right", va="bottom",
         fontsize=10, color="#6b7280",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#d1d5db", alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                  edgecolor="#d1d5db", alpha=0.9),
     )
 
     fig.tight_layout()
@@ -176,12 +188,14 @@ def _update_iteration_plot():
 
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.step(iters, bests, where="post", color="#3b82f6", linewidth=2)
-    ax.scatter(iters, bests, c="#3b82f6", s=60, zorder=5, edgecolors="white", linewidths=0.5)
+    ax.scatter(iters, bests, c="#3b82f6", s=60, zorder=5,
+               edgecolors="white", linewidths=0.5)
 
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1f"))
     ax.set_xlabel("Iteration #", fontsize=12)
     ax.set_ylabel("Negative Latency (-μs)", fontsize=12)
-    ax.set_title("GPU MODE trimul — Best per Agent Iteration", fontsize=14, fontweight="bold")
+    ax.set_title("GPU MODE attn_bwd — Best per Agent Iteration",
+                 fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.3)
 
     best_overall = min(iter_best.values())
@@ -189,7 +203,8 @@ def _update_iteration_plot():
         f"Best: {best_overall:.2f} μs",
         xy=(0.02, 0.98), xycoords="axes fraction",
         fontsize=11, fontweight="bold", color="#3b82f6",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#3b82f6", alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                  edgecolor="#3b82f6", alpha=0.9),
     )
 
     fig.tight_layout()
@@ -227,7 +242,8 @@ def _log_experiment_direct(
 
     desc = hypothesis[:100]
     with open(TSV_FILE, "a") as f:
-        f.write(f"{iteration}\t{_current_agent_iteration}\t{commit}\t{time_us:.2f}\t{status}\t{desc}\n")
+        f.write(f"{iteration}\t{_current_agent_iteration}\t{commit}\t"
+                f"{time_us:.2f}\t{status}\t{desc}\n")
 
     try:
         _update_plot()
@@ -245,10 +261,6 @@ def _log_experiment_direct(
 
 
 def get_experiment_history() -> str:
-    """Read the full experiment history markdown.
-
-    Returns every prior kernel attempt, its code, hypothesis, and result.
-    """
     if not os.path.exists(HISTORY_FILE):
         return "No experiment history yet. This will be the first run."
     with open(HISTORY_FILE) as f:
