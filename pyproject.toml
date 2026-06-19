@@ -5,9 +5,7 @@ description = "Advisor-worker agent pair for iterative TriMul kernel optimizatio
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents>=0.5.0",
-    "langchain-openai>=0.3.0",
-    "langchain-anthropic>=0.3.0",
+    "anthropic>=0.90.0",
     "python-dotenv>=1.0.0",
     "requests>=2.32.0",
     "matplotlib>=3.9.0",

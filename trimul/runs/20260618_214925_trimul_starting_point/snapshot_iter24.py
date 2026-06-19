@@ -1,7 +1,6 @@
 """
-Optimized TriMul submission — torch.compile default mode + tensor-shape-derived dims
-(no Python integer args bs/N/hidden_dim) + per-call fused GEMM + fp16 bmm.
-This is experiment #21 — the proven best structure at 3,331 μs geomean.
+Optimized TriMul submission — torch.compile default mode + 4D torch.matmul
+(eliminates reshape before bmm, keeps [bs,H,N,N] throughout) + fp16 + tensor-shape dims.
 """
 
 import torch
@@ -34,16 +33,19 @@ def _trimul_core(x_4d, mask, fused_weight, w_norm2, b_norm2, w_out):
     left  = lp * lg.sigmoid() * mask_flat    # [M, H]
     right = rp * rg.sigmoid() * mask_flat    # [M, H]
 
-    # Reshape for batched matmul: [bs*H, N, N]
-    left_4d  = left.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
-    right_4d = right.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
+    # Reshape to [bs, H, N, N] — one permute, no second reshape needed
+    left_bhnn  = left.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2)   # [bs, H, N, N]
+    right_bhnn = right.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2)  # [bs, H, N, N]
 
-    # fp16 bmm for throughput on the dominant matmul
-    out = torch.bmm(left_4d.to(torch.float16),
-                    right_4d.to(torch.float16).transpose(-1, -2)).to(torch.float32)
+    # 4D torch.matmul: [bs, H, N, N] @ [bs, H, N, N]^T -> [bs, H, N, N]
+    # Uses cuBLAS 4D strided batched GEMM — no extra reshape vs bmm path
+    out = torch.matmul(
+        left_bhnn.to(torch.float16),
+        right_bhnn.to(torch.float16).transpose(-2, -1)
+    ).to(torch.float32)  # [bs, H, N, N]
 
-    # [bs*H, N, N] -> [bs, N, N, H]
-    out = out.reshape(bs, hidden_dim, N, N).permute(0, 2, 3, 1)
+    # [bs, H, N, N] -> [bs, N, N, H]  — one permute
+    out = out.permute(0, 2, 3, 1)
 
     out = F.layer_norm(out, [hidden_dim], weight=w_norm2, bias=b_norm2)
     out = out * og.sigmoid().reshape(bs, N, N, hidden_dim)
@@ -63,7 +65,6 @@ def custom_kernel(data):
     x = F.layer_norm(input_tensor, [dim],
                      weight=weights['norm.weight'],
                      bias=weights['norm.bias'])
-    # x is [bs, N, N, dim] — pass as 4D tensor, no Python int args for shapes
 
     # Build fused weight per-call (no caching)
     fused_weight = torch.cat([

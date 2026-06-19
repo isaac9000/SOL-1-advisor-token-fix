@@ -1,7 +1,6 @@
 """
-Optimized TriMul submission — torch.compile default mode + tensor-shape-derived dims
-(no Python integer args bs/N/hidden_dim) + per-call fused GEMM + fp16 bmm.
-This is experiment #21 — the proven best structure at 3,331 μs geomean.
+Optimized TriMul submission — torch.compile default mode + per-call fused GEMM
++ fp16 bmm (instead of bf16) + precision flags.
 """
 
 import torch
@@ -12,37 +11,25 @@ torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
 torch.backends.cudnn.allow_tf32 = True
 
 
-def _trimul_core(x_4d, mask, fused_weight, w_norm2, b_norm2, w_out):
-    """
-    x_4d:        [bs, N, N, dim]  — normalized input (LayerNorm applied outside)
-    mask:        [bs, N, N]
-    fused_weight:[5*H, dim]
-    """
-    bs         = x_4d.shape[0]
-    N          = x_4d.shape[1]
-    dim        = x_4d.shape[3]
-    hidden_dim = fused_weight.shape[0] // 5
-    M          = bs * N * N
-
-    x_flat    = x_4d.reshape(M, dim)
-    mask_flat = mask.reshape(M, 1)
-
-    # Single fused GEMM: [M, dim] x [5*H, dim]^T -> [M, 5*H]
+def _trimul_core(x_flat, mask_flat, bs, N, hidden_dim,
+                 fused_weight,
+                 w_norm2, b_norm2, w_out):
+    # Single fused GEMM: [bs*N*N, dim] x [5*H, dim]^T -> [bs*N*N, 5*H]
     all_proj = F.linear(x_flat, fused_weight)
     lp, rp, lg, rg, og = all_proj.split(hidden_dim, dim=-1)
 
-    left  = lp * lg.sigmoid() * mask_flat    # [M, H]
-    right = rp * rg.sigmoid() * mask_flat    # [M, H]
+    left = lp * lg.sigmoid() * mask_flat    # [bs*N*N, H]
+    right = rp * rg.sigmoid() * mask_flat   # [bs*N*N, H]
 
-    # Reshape for batched matmul: [bs*H, N, N]
-    left_4d  = left.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
+    # Reshape for batched matmul: [bs*hidden_dim, N, N]
+    left_4d = left.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
     right_4d = right.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
 
-    # fp16 bmm for throughput on the dominant matmul
+    # fp16 bmm — higher Tensor Core throughput on H100 vs bf16 for some shapes
     out = torch.bmm(left_4d.to(torch.float16),
                     right_4d.to(torch.float16).transpose(-1, -2)).to(torch.float32)
 
-    # [bs*H, N, N] -> [bs, N, N, H]
+    # [bs*hidden_dim, N, N] -> [bs, N, N, hidden_dim]
     out = out.reshape(bs, hidden_dim, N, N).permute(0, 2, 3, 1)
 
     out = F.layer_norm(out, [hidden_dim], weight=w_norm2, bias=b_norm2)
@@ -58,14 +45,19 @@ def custom_kernel(data):
     input_tensor, mask, weights, config = data
 
     dim = config["dim"]
+    hidden_dim = config["hidden_dim"]
 
-    # LayerNorm on input (outside compiled region — proven best)
+    bs, N, _, _ = input_tensor.shape
+
+    # LayerNorm on input (outside compiled region — proven best in exp #8/11/13)
     x = F.layer_norm(input_tensor, [dim],
                      weight=weights['norm.weight'],
                      bias=weights['norm.bias'])
-    # x is [bs, N, N, dim] — pass as 4D tensor, no Python int args for shapes
 
-    # Build fused weight per-call (no caching)
+    x_flat = x.reshape(bs * N * N, dim)
+    mask_flat = mask.reshape(bs * N * N, 1)
+
+    # Build fused weight per-call (no caching — avoids correctness crashes)
     fused_weight = torch.cat([
         weights['left_proj.weight'],
         weights['right_proj.weight'],
@@ -75,7 +67,8 @@ def custom_kernel(data):
     ], dim=0)  # [5*H, dim]
 
     return _trimul_compiled(
-        x, mask, fused_weight,
+        x_flat, mask_flat, bs, N, hidden_dim,
+        fused_weight,
         weights['to_out_norm.weight'],
         weights['to_out_norm.bias'],
         weights['to_out.weight'],

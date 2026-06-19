@@ -1,18 +1,18 @@
 """
 Deployable Modal H100 evaluator for the TriMul kernel task.
-
+ 
 Evaluation logic mirrors skydiscover benchmarks/gpu_mode/trimul exactly.
-
+ 
 Deploy once:
     uv run modal deploy eval_modal_trimul.py
-
+ 
 Then the agent's run_eval.py calls evaluate_kernel.remote(kernel_code).
 """
-
+ 
 import modal
-
+ 
 # ── Reference implementation (mirrors skydiscover trimul/reference.py) ────────
-
+ 
 TEST_CASES = [
     {"seqlen": 32,   "bs": 1, "dim": 128, "hiddendim": 128, "seed": 9371,   "nomask": True,  "distribution": "normal"},
     {"seqlen": 32,   "bs": 1, "dim": 128, "hiddendim": 128, "seed": 1092,   "nomask": False, "distribution": "normal"},
@@ -33,7 +33,7 @@ TEST_CASES = [
     {"seqlen": 1024, "bs": 1, "dim": 384, "hiddendim": 128, "seed": 5321,   "nomask": False, "distribution": "cauchy"},
     {"seqlen": 1024, "bs": 1, "dim": 768, "hiddendim": 128, "seed": 491,    "nomask": False, "distribution": "cauchy"},
 ]
-
+ 
 BENCHMARK_CASES = [
     {"seqlen": 256,  "bs": 2, "dim": 128, "hiddendim": 128, "seed": 9371,  "nomask": True,  "distribution": "normal"},
     {"seqlen": 768,  "bs": 1, "dim": 128, "hiddendim": 128, "seed": 381,   "nomask": True,  "distribution": "cauchy"},
@@ -43,7 +43,7 @@ BENCHMARK_CASES = [
     {"seqlen": 768,  "bs": 1, "dim": 384, "hiddendim": 128, "seed": 481,   "nomask": False, "distribution": "normal"},
     {"seqlen": 1024, "bs": 1, "dim": 384, "hiddendim": 128, "seed": 23291, "nomask": True,  "distribution": "normal"},
 ]
-
+ 
 SCORE_SCALE = 3000.0
 BENCH_USE_CUDA_EVENTS = True
 BENCH_REL_ERROR = 0.001
@@ -51,9 +51,9 @@ BENCH_WALL_TIMEOUT_NS = 120e9
 BENCH_NO_GRAD = False
 BENCH_MAX_REPEATS = 100
 BENCH_MAX_TIME_NS = 10e9
-
+ 
 # ── Modal image ───────────────────────────────────────────────────────────────
-
+ 
 image = (
     modal.Image.from_registry(
         "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel",
@@ -61,12 +61,12 @@ image = (
     )
     .pip_install("triton")
 )
-
+ 
 app = modal.App("trimul-kernel-eval")
-
-
+ 
+ 
 # ── Evaluator function ────────────────────────────────────────────────────────
-
+ 
 @app.function(gpu="H100", image=image, timeout=600)
 def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
     import contextlib
@@ -80,12 +80,12 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
     import tempfile
     import time
     import traceback
-
+ 
     import torch
     from torch import nn, einsum
-
+ 
     # ── Reference helpers ────────────────────────────────────────────────────
-
+ 
     class _TriMul(nn.Module):
         def __init__(self, dim, hidden_dim, device="cuda"):
             super().__init__()
@@ -97,7 +97,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             self.out_gate = nn.Linear(dim, hidden_dim, bias=False, device=device)
             self.to_out_norm = nn.LayerNorm(hidden_dim, device=device)
             self.to_out = nn.Linear(hidden_dim, dim, bias=False, device=device)
-
+ 
         def forward(self, x, mask):
             x = self.norm(x)
             left = self.left_proj(x)
@@ -112,7 +112,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             out = self.to_out_norm(out)
             out = out * out_gate
             return self.to_out(out)
-
+ 
     def ref_kernel(data):
         old_matmul = torch.backends.cuda.matmul.allow_tf32
         old_cudnn = torch.backends.cudnn.allow_tf32
@@ -136,13 +136,13 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
         finally:
             torch.backends.cuda.matmul.allow_tf32 = old_matmul
             torch.backends.cudnn.allow_tf32 = old_cudnn
-
+ 
     def generate_input(seqlen, bs, dim, hiddendim, seed, nomask, distribution="normal"):
         hidden_dim = hiddendim
         config = {"hidden_dim": hidden_dim, "dim": dim}
         gen = torch.Generator(device="cuda")
         gen.manual_seed(seed)
-
+ 
         if distribution == "cauchy":
             u = torch.empty((bs, seqlen, seqlen, dim), device="cuda", dtype=torch.float32)
             u.uniform_(0.0, 1.0, generator=gen)
@@ -151,12 +151,12 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             input_tensor = torch.randn(
                 (bs, seqlen, seqlen, dim), device="cuda", dtype=torch.float32, generator=gen
             ).contiguous()
-
+ 
         if nomask:
             mask = torch.ones(bs, seqlen, seqlen, device="cuda")
         else:
             mask = torch.randint(0, 2, (bs, seqlen, seqlen), device="cuda", generator=gen).float()
-
+ 
         weights = {
             "norm.weight": torch.randn(dim, device="cuda"),
             "norm.bias": torch.randn(dim, device="cuda"),
@@ -170,7 +170,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             "to_out.weight": torch.randn(dim, hidden_dim, device="cuda") / math.sqrt(dim),
         }
         return (input_tensor, mask, weights, config)
-
+ 
     def check_implementation(data, submission_output, rtol=2e-2, atol=2e-2):
         old_matmul = torch.backends.cuda.matmul.allow_tf32
         old_cudnn = torch.backends.cudnn.allow_tf32
@@ -187,10 +187,10 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
         finally:
             torch.backends.cuda.matmul.allow_tf32 = old_matmul
             torch.backends.cudnn.allow_tf32 = old_cudnn
-
+ 
     # matches skydiscover modal_eval.py _eval_triton_impl
     _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
+ 
     def _clone(data):
         if isinstance(data, tuple):
             return tuple(_clone(x) for x in data)
@@ -209,7 +209,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
                 cloned.seq_len = data.seq_len
             return cloned
         return data
-
+ 
     def _stats(durations):
         n = len(durations)
         avg = sum(durations) / n
@@ -220,17 +220,25 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
         else:
             std, err = 0.0, 0.0
         return {"runs": n, "mean": avg, "std": std, "err": err}
-
+ 
+    def clear_l2_cache():
+        # Mirrors gpu-mode/reference-kernels utils.clear_l2_cache: scrub L2 between
+        # timed calls so a reused `data` tensor can't read a warm cache from the
+        # previous identical call and report optimistically fast.
+        dummy = torch.empty((32, 1024, 1024), dtype=torch.int64, device="cuda")
+        dummy.fill_(42)
+        del dummy
+ 
     # ── Load submission ──────────────────────────────────────────────────────
-
+ 
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unknown"
     torch_ver = torch.__version__
-
+ 
     tmp_dir = tempfile.mkdtemp(prefix="submission_")
     tmp_path = _os.path.join(tmp_dir, "submission.py")
     with open(tmp_path, "w") as f:
         f.write(kernel_code)
-
+ 
     try:
         spec = importlib.util.spec_from_file_location("submission", tmp_path)
         mod = importlib.util.module_from_spec(spec)
@@ -248,9 +256,9 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             "platform": "modal-h100",
             "failure_stage": "import",
         })
-
+ 
     # ── Correctness tests (no_grad to reduce autograd memory) ───────────────
-
+ 
     test_details = []
     tests_passed = 0
     for i, tc in enumerate(TEST_CASES):
@@ -293,7 +301,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
                 "passed": False,
                 "error": traceback.format_exc()[:600],
             })
-
+ 
     if tests_passed < len(TEST_CASES):
         return _json.dumps({
             "success": False,
@@ -306,7 +314,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             "platform": "modal-h100",
             "failure_stage": "correctness",
         })
-
+ 
     if mode == "test":
         return _json.dumps({
             "success": True,
@@ -317,17 +325,17 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             "torch_version": torch_ver,
             "platform": "modal-h100",
         })
-
+ 
     # ── Benchmarks ───────────────────────────────────────────────────────────
-
+ 
     ctx = torch.no_grad() if BENCH_NO_GRAD else contextlib.nullcontext()
     benchmark_details = []
     bench_means_ns = []
-
+ 
     for bench_args in BENCHMARK_CASES:
         data = generate_input(**bench_args)
         data_copy = _clone(data)
-
+ 
         # Correctness check, then free GPU memory before ref kernel runs
         with ctx:
             output = custom_kernel(data)
@@ -339,7 +347,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             del data_copy, output
             gc.collect()
             torch.cuda.empty_cache()
-
+ 
         if not passed:
             return _json.dumps({
                 "success": False,
@@ -352,23 +360,24 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
                 "platform": "modal-h100",
                 "failure_stage": "benchmark",
             })
-
+ 
         # Regenerate fresh data for timed runs
         data = generate_input(**bench_args)
-
+ 
         # Per-shape warmup: ensures torch.compile/Triton is fully warm
         # for this specific shape with these exact tensor addresses before timing
         for _ in range(3):
             custom_kernel(data)
             torch.cuda.synchronize()
-
+ 
         durations_ns = []
         bm_start = time.perf_counter_ns()
-
+ 
         with ctx:
             for t in range(BENCH_MAX_REPEATS):
+                clear_l2_cache()  # scrub L2 before each timed call (not measured)
                 torch.cuda.synchronize()  # flush any pending work before timing
-
+ 
                 if BENCH_USE_CUDA_EVENTS:
                     s = torch.cuda.Event(enable_timing=True)
                     e = torch.cuda.Event(enable_timing=True)
@@ -382,10 +391,10 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
                     output = custom_kernel(data)
                     torch.cuda.synchronize()
                     duration_ns = time.perf_counter_ns() - t0
-
+ 
                 del output
                 durations_ns.append(duration_ns)
-
+ 
                 if t > 1:
                     st = _stats(durations_ns)
                     if st["mean"] > 0 and st["err"] / st["mean"] < BENCH_REL_ERROR:
@@ -394,7 +403,7 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
                         break
                     if (time.perf_counter_ns() - bm_start) > BENCH_WALL_TIMEOUT_NS:
                         break
-
+ 
         st = _stats(durations_ns)
         mean_us = st["mean"] / 1e3
         err_us = st["err"] / 1e3
@@ -411,12 +420,12 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
             "runs": st["runs"],
         })
         bench_means_ns.append(st["mean"])
-
+ 
     means_s = [ns / 1e9 for ns in bench_means_ns]
     geomean_s = math.pow(math.prod(means_s), 1.0 / len(means_s))
     geomean_us = geomean_s * 1e6
     score = SCORE_SCALE / geomean_us
-
+ 
     return _json.dumps({
         "success": True,
         "tests_passed": tests_passed,
@@ -431,3 +440,4 @@ def evaluate_kernel(kernel_code: str, mode: str = "leaderboard") -> str:
         "torch_version": torch_ver,
         "platform": "modal-h100",
     })
+ 

@@ -1,8 +1,7 @@
-"""Custom tools for the TriMul CUDA kernel optimization deep agent."""
+"""Shared state and tool implementations for the TriMul optimization loop."""
 
 import os
 from datetime import datetime, timezone
-from langchain.tools import tool
 
 HISTORY_FILE = "experiment_history.md"
 TSV_FILE = "results.tsv"
@@ -245,43 +244,10 @@ def _log_experiment_direct(
     return f"Logged #{iteration} {status}: {time_us:.2f} μs — {hypothesis}"
 
 
-@tool
-def log_experiment(
-    hypothesis: str,
-    time_us: float,
-    status: str,
-    error_message: str = "",
-    commit: str = "HEAD",
-) -> str:
-    """Log a kernel experiment to experiment_history.md and results.tsv.
-
-    Call this after every submission attempt. Reads submission.py automatically.
-
-    Args:
-        hypothesis: What this experiment was trying and why.
-        time_us: Geometric mean latency in microseconds. Use 0.0 for crashes.
-        status: "keep" (new best), "discard" (worse than best), or "crash".
-        error_message: Error output if status is "crash", else empty string.
-        commit: Short git commit hash (optional, defaults to "HEAD").
-
-    Returns:
-        Confirmation message with experiment number.
-    """
-    submission_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "submission.py")
-    try:
-        with open(submission_path) as f:
-            kernel_code = f.read()
-    except Exception as e:
-        kernel_code = f"(could not read submission.py: {e})"
-    return _log_experiment_direct(kernel_code, hypothesis, time_us, status, error_message, commit)
-
-
-@tool
 def get_experiment_history() -> str:
     """Read the full experiment history markdown.
 
     Returns every prior kernel attempt, its code, hypothesis, and result.
-    Call this before proposing a new approach to avoid repeating failures.
     """
     if not os.path.exists(HISTORY_FILE):
         return "No experiment history yet. This will be the first run."

@@ -66,6 +66,8 @@ Each iteration:
 2. **Synthesize** — produce a STATE: where the run is, what's working, what's dead, what the noise floor looks like.
 3. **Output STATE + PROPOSAL.**
 
+The worker implements your proposal and the orchestrator evaluates it. You never edit files, run evaluation, or see raw evaluation output directly — results arrive through `get_experiment_history`.
+
 ## Forbidden moves
 
 - Specifying exact implementation values (specific block sizes, thread counts, tile shapes, etc.). Those are implementation details — worker turf. Set the strategic direction; let the worker choose the specifics.

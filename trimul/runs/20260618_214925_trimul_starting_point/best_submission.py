@@ -1,7 +1,6 @@
 """
 Optimized TriMul submission — torch.compile default mode + tensor-shape-derived dims
 (no Python integer args bs/N/hidden_dim) + per-call fused GEMM + fp16 bmm.
-This is experiment #21 — the proven best structure at 3,331 μs geomean.
 """
 
 import torch
@@ -18,13 +17,14 @@ def _trimul_core(x_4d, mask, fused_weight, w_norm2, b_norm2, w_out):
     mask:        [bs, N, N]
     fused_weight:[5*H, dim]
     """
-    bs         = x_4d.shape[0]
-    N          = x_4d.shape[1]
-    dim        = x_4d.shape[3]
-    hidden_dim = fused_weight.shape[0] // 5
-    M          = bs * N * N
+    bs   = x_4d.shape[0]
+    N    = x_4d.shape[1]
+    dim  = x_4d.shape[3]
+    H5   = fused_weight.shape[0]
+    hidden_dim = H5 // 5
+    M    = bs * N * N
 
-    x_flat    = x_4d.reshape(M, dim)
+    x_flat   = x_4d.reshape(M, dim)
     mask_flat = mask.reshape(M, 1)
 
     # Single fused GEMM: [M, dim] x [5*H, dim]^T -> [M, 5*H]
@@ -38,7 +38,7 @@ def _trimul_core(x_4d, mask, fused_weight, w_norm2, b_norm2, w_out):
     left_4d  = left.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
     right_4d = right.reshape(bs, N, N, hidden_dim).permute(0, 3, 1, 2).reshape(bs * hidden_dim, N, N)
 
-    # fp16 bmm for throughput on the dominant matmul
+    # fp16 bmm
     out = torch.bmm(left_4d.to(torch.float16),
                     right_4d.to(torch.float16).transpose(-1, -2)).to(torch.float32)
 
