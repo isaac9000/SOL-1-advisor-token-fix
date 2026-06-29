@@ -4,7 +4,6 @@ Optimized attention-backward kernel using torch.compile with reduce-overhead mod
 - Warm-up at module load time with representative tensor shapes to pre-compile
 - Falls back gracefully if compile fails
 - Full pipeline: dO permute, both BMMs in GQA-reshaped form, softmax-backward, dV group-sum
-- Contiguous BMM inputs for better cuBLAS kernel selection
 """
 
 import torch
@@ -41,20 +40,15 @@ def _core_attention_backward(
                       .contiguous()
                       .reshape(bs * n_kv_heads, n_groups * seq_q, HEAD_DIM))
 
-    # Prepare matmul operands
-    # Make vs_T contiguous so cuBLAS sees a NN GEMM (both inputs contiguous)
+    # Prepare matmul operands (free views)
     vs_flat         = value_states.reshape(bs * n_kv_heads, seq_kv, HEAD_DIM)
-    vs_T_contiguous = vs_flat.transpose(-2, -1).contiguous()  # [bs*8, 128, skv]
-
     attn_groups_flat = attn_weights_dropped.reshape(bs * n_kv_heads, n_groups * seq_q, seq_kv)
-    # Make attn^T contiguous so cuBLAS sees a NN GEMM for dV BMM
-    attn_T_contiguous = attn_groups_flat.transpose(-2, -1).contiguous()  # [bs*8, skv, 10*sq]
 
     # dP: [bs*8, 10*sq, 128] @ [bs*8, 128, skv] -> [bs*8, 10*sq, skv]
-    dP_groups = torch.bmm(dO_groups_flat, vs_T_contiguous)
+    dP_groups = torch.bmm(dO_groups_flat, vs_flat.transpose(-2, -1))
 
     # dV: [bs*8, skv, 10*sq] @ [bs*8, 10*sq, 128] -> [bs*8, skv, 128]
-    dV_flat = torch.bmm(attn_T_contiguous, dO_groups_flat)
+    dV_flat = torch.bmm(attn_groups_flat.transpose(-2, -1), dO_groups_flat)
 
     # Softmax backward
     total_rows = bs * NUM_ATTENTION_HEADS * seq_q

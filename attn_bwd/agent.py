@@ -447,6 +447,8 @@ def main() -> None:
     parser.add_argument("--baseline", "-b", default=None, help="Path to baseline file")
     parser.add_argument("--advisor-model", default=None)
     parser.add_argument("--worker-model", default=None)
+    parser.add_argument("--max-tokens", "-t", type=int, default=None,
+                        help="Stop after this many total tokens (input + output)")
     args = parser.parse_args()
 
     load_dotenv(os.path.join(REPO_ROOT, ".env"))
@@ -544,11 +546,19 @@ def main() -> None:
         kickoff_note = "submission.py is the current kernel. Improve it. "
 
     all_proposals: list = []
+    all_advisor_history: list = []
+    all_worker_history: list = []
     total_llm_calls = 0
     iteration = 0
 
     try:
         while iteration < args.iterations:
+            if args.max_tokens is not None:
+                used = _token_totals["input_tokens"] + _token_totals["output_tokens"]
+                if used >= args.max_tokens:
+                    print(f"\n--- Token budget exhausted: {used:,} / {args.max_tokens:,} tokens ---")
+                    break
+
             iteration += 1
             set_agent_iteration(iteration)
             print(f"\n{'='*60}")
@@ -559,21 +569,23 @@ def main() -> None:
 
             # ── ADVISOR ──────────────────────────────────────────────────
             print("[advisor] Proposing...", flush=True)
-            advisor_history.append({
+            experiment_history = _tools.get_experiment_history()
+            advisor_history = [{
                 "role": "user",
                 "content": (
                     f"Iteration {iteration}/{args.iterations}.\n\n"
                     f"{summary}\n\n"
-                    "Call get_experiment_history for the full code and results, "
-                    "then output your structured proposal."
+                    f"## Experiment History\n\n{experiment_history}\n\n"
+                    "Output your structured proposal."
                 ),
-            })
+            }]
             proposal, advisor_calls = run_agent_turn_retrying(
-                client, advisor_history, advisor_system, ADVISOR_TOOLS,
+                client, advisor_history, advisor_system, [],
                 advisor_model, label="advisor",
             )
             total_llm_calls += advisor_calls
             set_llm_call_count(total_llm_calls)
+            all_advisor_history.append({"iteration": iteration, "turns": list(advisor_history)})
             all_proposals.append((iteration, proposal))
             print(f"\n[advisor proposal]\n{'-'*40}\n{proposal[:1000]}\n{'-'*40}\n",
                   flush=True)
@@ -585,6 +597,8 @@ def main() -> None:
             if os.path.exists(SUBMISSION_FILE):
                 shutil.copy2(SUBMISSION_FILE, snapshot_path)
 
+            worker_history = []
+            all_worker_history.append({"iteration": iteration, "turns": worker_history})
             worker_history.append({
                 "role": "user",
                 "content": (
@@ -644,6 +658,11 @@ def main() -> None:
                         f"{os.path.basename(restore_src)}",
                         flush=True,
                     )
+
+            with open(os.path.join(run_dir, "advisor_history.json"), "w") as f:
+                json.dump(all_advisor_history, f, indent=2)
+            with open(os.path.join(run_dir, "worker_history.json"), "w") as f:
+                json.dump(all_worker_history, f, indent=2)
 
             if iteration % args.checkpoint_every == 0:
                 print_checkpoint(iteration, args.iterations, start_time, total_llm_calls)

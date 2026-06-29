@@ -1,0 +1,14 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3429.12	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	2091.35	keep	Restructured the attention backward computation to:
+3	2	HEAD	974.64	keep	Replaced the 5D grouped tensor approach with flat 3D BMMs:
+4	3	HEAD	0.00	crash	** Replaced the `torch.compile` + PyTorch ops approach with a single Triton kernel `_attn_bwd_kernel
+5	4	HEAD	867.81	keep	** Replaced the `V_exp = value_states.unsqueeze(2).expand(...).reshape(...)` pattern with a grouped 
+6	5	HEAD	523.01	keep	Added a `softmax_bwd_kernel` Triton JIT kernel and `fused_softmax_bwd` launcher. The kernel tiles ov
+7	6	HEAD	520.60	keep	Worker implementation
+8	7	HEAD	0.00	crash	** Replaced the separate BMM + `fused_softmax_bwd` with a new `fused_dP_softmax_bwd_kernel` that:
+9	8	HEAD	631.17	discard	**
+10	9	HEAD	1023.24	discard	** Replaced the old dV path (B80 separate BMMs + explicit `sum(dim=1)` reduction) with a single grou
+11	10	HEAD	1016.45	discard	Cleaned up the implementation to:
+12	11	HEAD	0.00	crash	Replaced `softmax_bwd_phase1_kernel` + `softmax_bwd_phase2_kernel` with a single `softmax_bwd_single
+13	12	HEAD	0.00	crash	** Replaced the separate `torch.bmm` for dP + `fused_softmax_bwd` Triton kernel with a new `fused_dP

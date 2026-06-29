@@ -1,0 +1,7 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3483.45	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	1274.79	keep	** Two Triton kernels:
+3	2	HEAD	1570.66	discard	**
+4	3	HEAD	1079.61	keep	**
+5	4	HEAD	1147.01	discard	**
+6	5	HEAD	1570.06	discard	**

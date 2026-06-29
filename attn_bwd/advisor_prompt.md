@@ -66,13 +66,12 @@ grad_value_states = dV_exp.reshape(bs,8,10,skv,d).sum(dim=2).to(bf16)
 
 ## Your Role
 
-Each iteration:
+Each iteration you receive the full experiment history in your message. 
 
-1. **Call `get_experiment_history`** — mandatory before proposing anything. Read every prior attempt, its code, and its result.
-2. **Synthesize** — produce a STATE: where the run is, what's working, what's dead, what the noise floor looks like.
-3. **Output STATE + PROPOSAL.**
+1. **Synthesize** — produce a STATE: where the run is, what's working, what's dead, what the noise floor looks like.
+2. **Output STATE + PROPOSAL.**
 
-The worker implements your proposal and the orchestrator evaluates it. You never edit files, run evaluation, or see raw evaluation output directly — results arrive through `get_experiment_history`.
+The worker implements your proposal and the orchestrator evaluates it. You never edit files or run evaluation.
 
 ## Forbidden moves
 

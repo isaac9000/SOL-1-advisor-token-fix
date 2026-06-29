@@ -1,0 +1,10 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3430.34	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	891.01	keep	** Wrapped `_attn_backward_impl` (which does all the math) in `torch.compile(mode="max-autotune", fu
+3	2	HEAD	3453.51	discard	** Replaced the `torch.compile`-based implementation with a custom Triton kernel `_attn_bwd_kernel` 
+4	3	HEAD	2290.97	discard	** Replaced the broken Triton kernel with a `torch.compile`-compiled pure-PyTorch implementation tha
+5	4	HEAD	2215.34	discard	Replaced the broadcast-based `[bs*8, 10, sq, d]` layout with a stacked `[bs*8, 10*sq, d]` layout for
+6	5	HEAD	0.00	crash	Added `_cuda_graph_cache` dict and `_get_or_build_graph()` function that manages per-shape CUDA grap
+7	6	HEAD	952.89	discard	All three targeted changes applied exactly as specified. Added `.contiguous()` after `dO = grad_attn
+8	7	HEAD	1267.15	discard	Added a Triton kernel `_softmax_dropout_bwd_kernel` that processes one row (b,h,q) per program in tw
+9	8	HEAD	2436.54	discard	** Added a `_dv_kernel` Triton kernel with grid `(bs*n_kv_heads, ceil(skv/BLOCK_KV), ceil(d/BLOCK_D)

@@ -238,7 +238,8 @@ def _log_experiment_direct(
                 f.write(f"**Error:**\n```\n{error_message[:2000]}\n```\n\n")
         else:
             f.write(f"**Result:** {time_us:.2f} μs\n\n")
-        f.write(f"**Kernel code:**\n```python\n{kernel_code}\n```\n\n")
+        if status == "keep":
+            f.write(f"**Kernel code:**\n```python\n{kernel_code}\n```\n\n")
 
     desc = hypothesis[:100]
     with open(TSV_FILE, "a") as f:
