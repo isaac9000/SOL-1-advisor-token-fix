@@ -1,0 +1,27 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3428.46	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	2404.77	keep	** Two Triton kernels — `attn_bwd_ds_kernel` and `attn_bwd_dv_kernel` — replacing the pure PyTorch r
+3	2	HEAD	2535.17	discard	Refined the existing two-kernel approach with several targeted improvements:
+4	3	HEAD	3808.15	discard	** Replaced the two-pass Triton kernel for `dS` with a **single-pass Triton kernel** that reads prec
+5	4	HEAD	0.00	crash	1. Removed `attn_bwd_ds_kernel` and `attn_bwd_dv_kernel` (the two complex Triton GEMM kernels).
+6	5	HEAD	2021.69	keep	1. **Step 1**: `dO = grad_attn_output.transpose(1,2).contiguous().to(float32)` — [bs, 80, sq, 128]
+7	6	HEAD	2046.72	discard	Restructured the `softmax_bwd_kernel` to use **one program per row** (bs × n_heads × seq_q) instead 
+8	7	HEAD	851.07	keep	**
+9	8	HEAD	788.02	keep	Added a single-pass Triton softmax backward kernel (`softmax_bwd_kernel_single`) that loads each dat
+10	9	HEAD	786.71	keep	** A targeted refinement of the existing GQA-native approach. The key change is how `dO_grouped` is 
+11	10	HEAD	3353.91	discard	Replaced the two-step approach (BMM matmul → float32 dP_raw → Triton softmax kernel) with two new fu
+12	11	HEAD	3381.65	discard	1. **Replaced the large BLOCK_SKV=1024 single-pass kernel** for seq_kv ≤ 1024 with a new `fused_bwd_
+13	12	HEAD	0.00	crash	** Replaced the per-row kernel (one program per sq row) with a **multi-row program kernel** (`fused_
+14	13	HEAD	0.00	crash	Replaced the two-step (BMM + Triton softmax_bwd) approach with a single `fused_ds_kernel` Triton ker
+15	14	HEAD	6197.73	discard	** Replaced the two-step approach (cuBLAS BMM for `dP_raw` + Triton pointwise softmax kernel) with a
+16	15	HEAD	2246.39	discard	** Replaced the per-row fused kernel (one program per sq_row using `tl.sum(dO_row * V_tile, axis=1)`
+17	16	HEAD	0.00	crash	** Modified `fused_ds_kernel` to:
+18	17	HEAD	466.23	keep	Changed `dP_raw` from float32 to bfloat16 throughout. The BMM result `dP_raw_grouped` now stays as b
+19	18	HEAD	470.33	discard	** Two changes combined:
+20	19	HEAD	445.16	keep	Replaced both `softmax_bwd_kernel_single` and `softmax_bwd_kernel` with a single `softmax_bwd_multir
+21	20	HEAD	449.48	discard	Tuned `BLOCK_SQ` from a fixed `4` to adaptive values based on `seq_kv`: use `BLOCK_SQ=8` for smaller
+22	21	HEAD	439.52	keep	Added a **single-pass softmax backward kernel** (`softmax_bwd_singlepass_kernel`) that handles the e
+23	22	HEAD	432.00	keep	** Added two persistent CUDA streams (`_stream1`, `_stream2`) created once via `_get_streams()`. The
+24	23	HEAD	431.32	keep	** Replaced the 5D permute path (`reshape → permute(0,2,3,1,4) → contiguous → reshape`) with a simpl
+25	24	HEAD	433.42	discard	Two targeted changes from the previous iteration's version:
+26	25	HEAD	0.00	crash	** Added `fused_ds_kernel` — a new Triton kernel that operates on GQA-native grouped layout `[bs, 8,

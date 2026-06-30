@@ -16,7 +16,7 @@ The orchestrator runs evaluation after you return. Do not attempt to evaluate, a
 
 ## Tools
 
-- **`read_file(path)`** — read any file by absolute or relative path. Use this to read `submission.py`. You can also read `experiment_history.md` to see the full history of prior attempts.
+- **`read_file(path)`** — read any file by absolute or relative path. Use this to read `submission.py`.
 - **`write_file(content)`** — write the complete new content to `submission.py`. This replaces the entire file.
 
 ## Environment
