@@ -1,11 +1,11 @@
 """
-Compare 1-advisor/2-mentor vs 1-advisor/1-mentor — SOLExecBench Problem 1 (attn_bwd).
+Compare 1-advisor/2-worker vs 1-advisor/1-worker — SOLExecBench Problem 1 (attn_bwd).
 
 Data sources:
-  1 mentor:  this repo, runs/20260630_210612_attn_bwd_starting_point_2_mil_tokens_workers_no_experiment_history/results.tsv
-  2 mentors: isaac9000/SOL-1-advisor-2-mentor, attn_bwd/runs/20260630_205102_attn_bwd_starting_point_2worker_83min/results.tsv
+  1 worker:  this repo, runs/20260630_210612_attn_bwd_starting_point_2_mil_tokens_workers_no_experiment_history/results.tsv
+  2 workers: isaac9000/SOL-1-advisor-2-worker, attn_bwd/runs/20260630_205102_attn_bwd_starting_point_2worker_83min/results.tsv
 
-Wall-clock timestamps are not available for the 2-mentor run (no per-experiment
+Wall-clock timestamps are not available for the 2-worker run (no per-experiment
 timestamps in its results.tsv/proposals.md/SKILLS.md — only an opaque global
 trial counter "t=" that isn't real time), so the x-axis uses iteration #
 (agent_iteration) instead.
@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-# ── 1 advisor / 1 mentor (this repo, run 20260630_210612) ───────────────────
+# ── 1 advisor / 1 worker (this repo, run 20260630_210612) ───────────────────
 # Token usage: 1,750,781 input + 264,846 output = 2,015,627 total, 149 LLM calls
 ONE_TOKENS = {"input": 1_750_781, "output": 264_846, "api_calls": 149}
 
@@ -63,7 +63,7 @@ one_iters = [r[0] for r in ONE_RAW]
 one_times = [r[1] for r in ONE_RAW]
 one_kinds = [r[2] for r in ONE_RAW]
 
-# ── 1 advisor / 2 mentors (SOL-1-advisor-2-mentor, run 20260630_205102) ─────
+# ── 1 advisor / 2 workers (SOL-1-advisor-2-worker, run 20260630_205102) ─────
 # Token usage: 991,859 input + 182,757 output = 1,174,616 total, 154 LLM calls
 TWO_TOKENS = {"input": 991_859, "output": 182_757, "api_calls": 154}
 
@@ -152,7 +152,7 @@ def ny(t):
 fig, ax = plt.subplots(figsize=(14, 8))
 fig.subplots_adjust(top=0.75)
 
-# ── 1 advisor / 1 mentor — green ──────────────────────────────────────────────
+# ── 1 advisor / 1 worker — green ──────────────────────────────────────────────
 one_kx = [it for it, k in zip(one_iters, one_kinds) if k == "keep"]
 one_ky = [ny(t) for t, k in zip(one_times, one_kinds) if k == "keep"]
 one_dx = [it for it, k in zip(one_iters, one_kinds) if k == "discard"]
@@ -161,15 +161,15 @@ one_cx = [it for it, k in zip(one_iters, one_kinds) if k == "crash"]
 
 if one_kx:
     ax.scatter(one_kx, one_ky, c="#22c55e", s=70, zorder=5,
-               edgecolors="white", linewidths=0.5, label="1 mentor keep")
+               edgecolors="white", linewidths=0.5, label="1 worker keep")
 if one_dx:
     ax.scatter(one_dx, one_dy, c="#86efac", s=40, zorder=4,
-               edgecolors="white", linewidths=0.3, alpha=0.8, label="1 mentor discard")
+               edgecolors="white", linewidths=0.3, alpha=0.8, label="1 worker discard")
 if one_bx:
     ax.step(one_bx, [-t for t in one_by], where="post", color="#22c55e",
-            linewidth=2, label="1 mentor best", zorder=6)
+            linewidth=2, label="1 worker best", zorder=6)
 
-# ── 1 advisor / 2 mentors — blue ──────────────────────────────────────────────
+# ── 1 advisor / 2 workers — blue ──────────────────────────────────────────────
 two_kx = [it for it, k in zip(two_iters, two_kinds) if k == "keep"]
 two_ky = [ny(t) for t, k in zip(two_times, two_kinds) if k == "keep"]
 two_dx = [it for it, k in zip(two_iters, two_kinds) if k == "discard"]
@@ -178,13 +178,13 @@ two_cx = [it for it, k in zip(two_iters, two_kinds) if k == "crash"]
 
 if two_kx:
     ax.scatter(two_kx, two_ky, c="#3b82f6", s=70, zorder=5,
-               edgecolors="white", linewidths=0.5, label="2 mentors keep")
+               edgecolors="white", linewidths=0.5, label="2 workers keep")
 if two_dx:
     ax.scatter(two_dx, two_dy, c="#93c5fd", s=40, zorder=4,
-               edgecolors="white", linewidths=0.3, alpha=0.8, label="2 mentors discard")
+               edgecolors="white", linewidths=0.3, alpha=0.8, label="2 workers discard")
 if two_bx:
     ax.step(two_bx, [-t for t in two_by], where="post", color="#3b82f6",
-            linewidth=2, label="2 mentors best", zorder=6)
+            linewidth=2, label="2 workers best", zorder=6)
 
 # ── Crashes ───────────────────────────────────────────────────────────────────
 all_cx = one_cx + two_cx
@@ -206,8 +206,8 @@ ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.01), ncol=4,
 # ── Best-time band ────────────────────────────────────────────────────────────
 fig.text(
     0.5, 0.92,
-    f"1 mentor best: {one_best:.2f} μs    |    "
-    f"2 mentors best: {two_best:.2f} μs",
+    f"1 worker best: {one_best:.2f} μs    |    "
+    f"2 workers best: {two_best:.2f} μs",
     ha="center", va="top", fontsize=11, fontweight="bold", color="#1e3a5f",
     bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
               edgecolor="#6b7280", alpha=0.9),
@@ -216,14 +216,14 @@ fig.text(
 # ── Title ─────────────────────────────────────────────────────────────────────
 fig.text(
     0.5, 0.995,
-    "1 advisor 2 mentors vs 1 advisor 1 mentor - SOLExecBench Problem 1 (all llms)",
+    "1 advisor 2 workers vs 1 advisor 1 worker - SOLExecBench Problem 1 (all llms)",
     ha="center", va="top", fontsize=14, fontweight="bold",
 )
 
 # ── Token usage annotations ───────────────────────────────────────────────────
 token_lines = [
-    ("1 mentor", "#22c55e", ONE_TOKENS, 0.26),
-    ("2 mentors", "#3b82f6", TWO_TOKENS, 0.51),
+    ("1 worker", "#22c55e", ONE_TOKENS, 0.26),
+    ("2 workers", "#3b82f6", TWO_TOKENS, 0.51),
 ]
 for label, color, tok, xfrac in token_lines:
     total = tok["input"] + tok["output"]
@@ -256,7 +256,7 @@ ax.axhline(-756, color="#9ca3af", linewidth=1.0, linestyle="--", alpha=0.5,
 ax.axhline(-82, color="#10b981", linewidth=1.0, linestyle="--", alpha=0.5,
            label="SOL ≈82 μs")
 
-out = "/workspace/SOL-1-advisor-token-fix/attn_bwd/comparison_2mentor_vs_1mentor.png"
+out = "/workspace/SOL-1-advisor-token-fix/attn_bwd/comparison_2worker_vs_1worker.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved {out}")
