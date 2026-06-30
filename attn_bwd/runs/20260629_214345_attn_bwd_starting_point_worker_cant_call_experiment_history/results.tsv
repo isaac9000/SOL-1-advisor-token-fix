@@ -1,0 +1,27 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3430.44	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	0.00	crash	** A Triton-based fused implementation with two kernels:
+3	2	HEAD	1926.35	keep	** Replaced `custom_kernel` with a `@torch.compile(mode="max-autotune", fullgraph=True)` decorated i
+4	3	HEAD	871.55	keep	** Replaced the `_attn_bwd_compiled` function entirely. The old code expanded value_states to [bs,80
+5	4	HEAD	414.85	keep	** Added a Triton kernel `_softmax_bwd_dropout_kernel` that processes one `(bs*head*sq)` row per pro
+6	5	HEAD	411.65	keep	**
+7	6	HEAD	742.71	discard	** Extracted the two BMM operations into a separate function `_compute_bmms` decorated with `@torch.
+8	7	HEAD	0.00	crash	Complete rewrite of submission.py replacing the 3-stage pipeline (BMM → softmax-bwd Triton → BMM) wi
+9	8	HEAD	5353.55	discard	** Replaced the entire `custom_kernel` with a fully fused `_flash_attn_bwd_kernel` Triton kernel. Th
+10	9	HEAD	1990.14	discard	Replaced the fused flash-attention-style Triton kernel with the three-stage pipeline from experiment
+11	10	HEAD	0.00	crash	** Replaced the two separate `torch.bmm` calls (and the CUDA stream overlap logic) with a single `_f
+12	11	HEAD	786.45	discard	** Extracted `_bmm_pipeline` function containing: (a) dO transpose+contiguous, (b) GQA reshape for d
+13	12	HEAD	3996.62	discard	** Wrote a new Triton kernel `_fused_dS_kernel` where each program handles one `(bs, head, sq_row)` 
+14	13	HEAD	1345.12	discard	** Rewrote the entire pipeline to:
+15	14	HEAD	1703.57	discard	** Two targeted changes to the BMM operations:
+16	15	HEAD	0.00	crash	** Replaced the separate `torch.bmm` + dropout mask + Triton softmax-bwd pipeline with a single `_fu
+17	16	HEAD	429.28	discard	**
+18	17	HEAD	0.00	crash	** Added `_graph_cache` dict, `_build_graph()` function that does warmup + `torch.cuda.CUDAGraph` ca
+19	18	HEAD	5763.83	discard	** Added `_fused_bmm_kernel` — a Triton kernel with grid `(B, cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` w
+20	19	HEAD	1233.56	discard	**
+21	20	HEAD	1302.20	discard	** Restructured `custom_kernel` to:
+22	21	HEAD	1357.18	discard	** Changed BMM shapes from `[bs*8, 10*sq, d]` to `[bs*80, sq, d]` for both BMMs. Value states are ex
+23	22	HEAD	1225.33	discard	** Replaced the `[bs*80, sq, d]` BMM layout with `[bs*8, 10*sq, d]` layout:
+24	23	HEAD	1222.15	discard	** Added two new Triton kernels (`_softmax_bwd_partial_sum_kernel` and `_softmax_bwd_apply_kernel`) 
+25	24	HEAD	6030.24	discard	** Replaced the separate `torch.bmm` for BMM1 + Triton softmax-bwd kernel with a single `_fused_bmm1
+26	25	HEAD	6140.55	discard	**

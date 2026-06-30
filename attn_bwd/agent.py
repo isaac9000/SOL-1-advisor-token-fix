@@ -149,7 +149,13 @@ def _dispatch_tool(name: str, args: dict) -> str:
     elif name == "read_file":
         path = args.get("path", "")
         if not os.path.isabs(path):
-            path = os.path.join(PROJECT_DIR, path)
+            resolved = os.path.join(PROJECT_DIR, path)
+            if not os.path.exists(resolved):
+                run_dir = os.path.dirname(_tools.HISTORY_FILE)
+                fallback = os.path.join(run_dir, path)
+                path = fallback if os.path.exists(fallback) else resolved
+            else:
+                path = resolved
         try:
             with open(path) as f:
                 return f.read()

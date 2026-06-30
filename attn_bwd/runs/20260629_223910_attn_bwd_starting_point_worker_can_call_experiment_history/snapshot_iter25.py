@@ -2,16 +2,21 @@
 Optimized attention-backward kernel using hybrid Triton + torch.matmul approach.
 
 Strategy:
-- Fused transpose+BMM1 Triton kernel: reads grad_attn_output [bs, sq, 80, d] directly
-  (without materializing transposed dO) and computes dP = dO @ vs^T in one pass.
-  This eliminates the separate dO transpose step and intermediate dO buffer for BMM1.
-  The kernel tiles over the M (n_groups*sq) and N (skv) dimensions, contracting over d.
-- _transpose_sq_heads_kernel retained only to produce dO_2d for BMM2 (separate Triton call)
+- dO transpose: use dO.copy_(grad_attn_output.permute(0,2,1,3)) — copies the
+  permuted (strided) view directly into pre-allocated contiguous buffer via
+  PyTorch's optimized CUDA copy path; no intermediate allocation, no custom kernel.
+- vs_T: pass strided view directly to cuBLAS via .transpose(-2,-1) on a reshape
+  — cuBLAS BMM accepts non-contiguous strided B matrices natively, no copy needed.
+- Both BMMs as clean 3D batched GEMMs (cuBLAS-optimized, no broadcasting)
+- BMM1: [bs*8, 10*sq, d] @ [bs*8, d, skv] -> [bs*8, 10*sq, skv]
+  (vs_T passed as strided view, cuBLAS handles transpose internally)
 - BMM2 fused with GQA: [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
 - Dual-stream pipelining with module-level cached streams/events
+  (eliminates Python object allocation overhead on every call)
 - Row-batched Triton softmax-bwd kernel on stream A after BMM1
   (overlaps with BMM2 on stream B)
 - Persistent buffer cache: pre-allocated tensors keyed by (bs, seq_q, seq_kv)
+  to eliminate torch.empty() allocation overhead on the hot path
 - Shape-adaptive dispatch: skip multi-stream overhead for small workloads
 """
 
@@ -25,6 +30,7 @@ HEAD_DIM = 128
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level cached CUDA streams and events
+# Created once at import/first-call time, reused on every subsequent call
 # ─────────────────────────────────────────────────────────────────────────────
 _stream_a = None
 _stream_b = None
@@ -45,6 +51,8 @@ def _ensure_streams():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Persistent buffer cache: keyed by (bs, seq_q, seq_kv)
+# Stores pre-allocated tensors: (dO, dP_dropped_2d, dV_flat, dS)
+# vs_T_2d removed since we use a strided view (no copy needed)
 # ─────────────────────────────────────────────────────────────────────────────
 _buffer_cache = {}
 
@@ -67,167 +75,6 @@ def _get_buffers(bs, seq_q, seq_kv, device):
                                      dtype=torch.bfloat16, device=device)
         _buffer_cache[key] = (dO, dP_dropped_2d, dV_flat, dS)
     return _buffer_cache[key]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Triton kernel: tiled transpose [bs, sq, n_heads, d] -> [bs, n_heads, sq, d]
-# Used only to produce dO for BMM2.
-# ─────────────────────────────────────────────────────────────────────────────
-@triton.jit
-def _transpose_sq_heads_kernel(
-    src_ptr,
-    dst_ptr,
-    bs,
-    sq,
-    n_heads,
-    HEAD_DIM: tl.constexpr,
-    TILE_SQ: tl.constexpr,
-    TILE_H: tl.constexpr,
-):
-    num_tiles_sq = tl.cdiv(sq, TILE_SQ)
-    num_tiles_h  = tl.cdiv(n_heads, TILE_H)
-
-    pid = tl.program_id(0)
-    tile_per_batch = num_tiles_sq * num_tiles_h
-    batch_idx   = pid // tile_per_batch
-    tile_idx    = pid % tile_per_batch
-    tile_sq_idx = tile_idx % num_tiles_sq
-    tile_h_idx  = tile_idx // num_tiles_sq
-
-    sq_start = tile_sq_idx * TILE_SQ
-    h_start  = tile_h_idx  * TILE_H
-
-    offs_sq = sq_start + tl.arange(0, TILE_SQ)
-    offs_h  = h_start  + tl.arange(0, TILE_H)
-    offs_d  = tl.arange(0, HEAD_DIM)
-
-    valid_sq = offs_sq < sq
-    valid_h  = offs_h  < n_heads
-
-    src_base = batch_idx * sq * n_heads * HEAD_DIM
-    src_offsets = (src_base
-                   + offs_sq[:, None, None] * (n_heads * HEAD_DIM)
-                   + offs_h[None, :, None] * HEAD_DIM
-                   + offs_d[None, None, :])
-    valid_mask = (valid_sq[:, None, None] & valid_h[None, :, None])
-
-    vals = tl.load(src_ptr + src_offsets, mask=valid_mask, other=0.0)
-
-    dst_base = batch_idx * n_heads * sq * HEAD_DIM
-    dst_offsets = (dst_base
-                   + offs_h[None, :, None] * (sq * HEAD_DIM)
-                   + offs_sq[:, None, None] * HEAD_DIM
-                   + offs_d[None, None, :])
-
-    tl.store(dst_ptr + dst_offsets, vals, mask=valid_mask)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Fused transpose+BMM1 kernel:
-#   Computes dP_dropped[b_kv, g*sq+q, s] = sum_d grad_attn_output[b, q, h, d] * vs[b_kv, s, d]
-#   where b_kv = b * n_kv_heads + (h // n_groups), g = h % n_groups
-#
-#   Input grad_attn_output: [bs, sq, n_heads, d]  strides: (sq*n_heads*d, n_heads*d, d, 1)
-#   Input vs_2d:            [n_bkv, skv, d]       strides: (skv*d, d, 1)
-#   Output dP_dropped_2d:   [n_bkv, n_groups*sq, skv]
-#
-# Grid: (n_bkv * cdiv(n_groups*sq, BLOCK_M) * cdiv(skv, BLOCK_N),)
-# Each CTA computes a BLOCK_M x BLOCK_N tile of the output for one b_kv index.
-# The K dimension (HEAD_DIM=128) is contracted over in BLOCK_K steps.
-# ─────────────────────────────────────────────────────────────────────────────
-@triton.jit
-def _fused_transpose_bmm1_kernel(
-    # grad_attn_output: [bs, sq, n_heads, HEAD_DIM]
-    dO_src_ptr,
-    # vs_2d: [n_bkv, skv, HEAD_DIM]
-    vs_ptr,
-    # output: [n_bkv, n_groups * sq, skv]
-    dP_ptr,
-    # dimensions
-    bs,
-    sq,
-    n_heads,        # 80
-    n_kv_heads,     # 8
-    n_groups,       # 10
-    skv,
-    # constexpr tile sizes
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,   # tile over M = n_groups * sq
-    BLOCK_N: tl.constexpr,   # tile over N = skv
-    BLOCK_K: tl.constexpr,   # tile over K = HEAD_DIM
-):
-    # Grid dims: n_bkv * ceil(M/BM) * ceil(N/BN)
-    M = n_groups * sq
-    num_m_tiles = tl.cdiv(M, BLOCK_M)
-    num_n_tiles = tl.cdiv(skv, BLOCK_N)
-
-    pid = tl.program_id(0)
-    tiles_per_bkv = num_m_tiles * num_n_tiles
-    bkv_idx  = pid // tiles_per_bkv
-    tile_idx = pid % tiles_per_bkv
-    tile_m   = tile_idx // num_n_tiles
-    tile_n   = tile_idx % num_n_tiles
-
-    # b and kv_head decomposition
-    b_idx   = bkv_idx // n_kv_heads
-    kv_idx  = bkv_idx % n_kv_heads
-
-    m_start = tile_m * BLOCK_M
-    n_start = tile_n * BLOCK_N
-
-    # M indices: each m in [0, n_groups*sq) maps to:
-    #   g = m // sq,  q = m % sq,  h = kv_idx * n_groups + g
-    offs_m = m_start + tl.arange(0, BLOCK_M)   # [BLOCK_M]
-    offs_n = n_start + tl.arange(0, BLOCK_N)   # [BLOCK_N]
-
-    valid_m = offs_m < M
-    valid_n = offs_n < skv
-
-    # Accumulator [BLOCK_M, BLOCK_N] in float32
-    acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-
-    # K dimension loop in BLOCK_K steps
-    for k_start in tl.range(0, HEAD_DIM, BLOCK_K):
-        offs_k = k_start + tl.arange(0, BLOCK_K)  # [BLOCK_K]
-        valid_k = offs_k < HEAD_DIM
-
-        # Load dO tile from grad_attn_output [bs, sq, n_heads, d]
-        # For row m: g = m // sq, q_pos = m % sq, h = kv_idx * n_groups + g
-        # flat addr = b_idx * sq * n_heads * d + q_pos * n_heads * d + h * d + k
-        g_vals    = offs_m // sq               # [BLOCK_M]
-        q_vals    = offs_m % sq                # [BLOCK_M]
-        h_vals    = kv_idx * n_groups + g_vals # [BLOCK_M]
-
-        # dO address: b_idx * sq * n_heads * d + q * n_heads * d + h * d + k
-        dO_base = b_idx * sq * n_heads * HEAD_DIM
-        dO_offsets = (dO_base
-                      + q_vals[:, None] * (n_heads * HEAD_DIM)   # [BM, 1]
-                      + h_vals[:, None] * HEAD_DIM               # [BM, 1]
-                      + offs_k[None, :])                          # [1, BK]
-        dO_mask = valid_m[:, None] & valid_k[None, :]
-        dO_tile = tl.load(dO_src_ptr + dO_offsets, mask=dO_mask, other=0.0).to(tl.float32)
-        # dO_tile: [BLOCK_M, BLOCK_K]
-
-        # Load vs tile from vs_2d [n_bkv, skv, d]
-        # addr = bkv_idx * skv * d + n * d + k
-        vs_base = bkv_idx * skv * HEAD_DIM
-        vs_offsets = (vs_base
-                      + offs_n[:, None] * HEAD_DIM  # [BN, 1]
-                      + offs_k[None, :])              # [1, BK]
-        vs_mask = valid_n[:, None] & valid_k[None, :]
-        vs_tile = tl.load(vs_ptr + vs_offsets, mask=vs_mask, other=0.0).to(tl.float32)
-        # vs_tile: [BLOCK_N, BLOCK_K]
-
-        # acc += dO_tile @ vs_tile^T  -> [BLOCK_M, BLOCK_N]
-        acc = tl.dot(dO_tile, tl.trans(vs_tile), acc)
-
-    # Store result to dP_dropped_2d [n_bkv, M, skv]
-    dP_base = bkv_idx * M * skv
-    dP_offsets = (dP_base
-                  + offs_m[:, None] * skv   # [BM, 1]
-                  + offs_n[None, :])          # [1, BN]
-    dP_mask = valid_m[:, None] & valid_n[None, :]
-    tl.store(dP_ptr + dP_offsets, acc.to(tl.bfloat16), mask=dP_mask)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,13 +139,9 @@ def _softmax_bwd_kernel(
                     tl.store(dS_ptr + base + offs, dS_vals.to(tl.bfloat16), mask=valid)
 
 
-# Threshold for shape-adaptive dispatch
+# Threshold for shape-adaptive dispatch: total elements
+# Below this threshold, multi-stream overhead may dominate; use sequential path
 _STREAM_THRESHOLD = 80 * 512 * 512  # ~20M elements
-
-# Tile sizes for fused transpose+BMM1
-_FUSED_BLOCK_M = 32
-_FUSED_BLOCK_N = 64
-_FUSED_BLOCK_K = 32
 
 
 def custom_kernel(data):
@@ -321,53 +164,27 @@ def custom_kernel(data):
     # Get or allocate persistent buffers for this shape
     dO, dP_dropped_2d, dV_flat, dS = _get_buffers(bs, seq_q, seq_kv, device)
 
-    # ── Step 1: Transpose [bs, sq, 80, d] -> [bs, 80, sq, d] (for BMM2) ─────
-    # Use Triton transpose kernel to produce dO for BMM2
-    TILE_SQ = 8
-    TILE_H  = 8
-    num_tiles_sq = triton.cdiv(seq_q, TILE_SQ)
-    num_tiles_h  = triton.cdiv(n_heads, TILE_H)
-    transpose_grid = bs * num_tiles_sq * num_tiles_h
+    # ── Step 1: Transpose [bs, sq, 80, d] -> [bs, 80, sq, d] ────────────────
+    # Use dO.copy_() with a permuted (strided) source view.
+    # PyTorch dispatches non-contiguous copy to an optimized CUDA copy kernel
+    # (e.g., cuDNN or a vectorized elementwise kernel), avoiding both:
+    #   (a) intermediate allocation from .contiguous()
+    #   (b) custom Triton transpose kernel overhead
+    dO.copy_(grad_attn_output.permute(0, 2, 1, 3))
 
-    _transpose_sq_heads_kernel[(transpose_grid,)](
-        grad_attn_output,
-        dO,
-        bs, seq_q, n_heads,
-        HEAD_DIM=HEAD_DIM,
-        TILE_SQ=TILE_SQ,
-        TILE_H=TILE_H,
-    )
-
-    # dO: [bs, 80, sq, d] -> reshape to [bs*8, 10*sq, d] for BMM2
+    # dO is now [bs, 80, sq, d], contiguous
+    # Reshape to [bs*8, 10*sq, d] for both BMMs
     dO_2d = dO.reshape(n_bkv, n_groups * seq_q, HEAD_DIM)
 
-    # ── Step 2: Fused transpose+BMM1 Triton kernel ───────────────────────────
-    # Reads grad_attn_output [bs, sq, n_heads, d] directly (native layout)
-    # Reads vs_2d [n_bkv, skv, d]
-    # Writes dP_dropped_2d [n_bkv, n_groups*sq, skv]
-    # No intermediate dO buffer needed for BMM1 path
-
+    # ── Step 2: Prepare vs_T as a strided view (zero-copy) ───────────────────
+    # value_states: [bs, 8, skv, d] -> reshape to [bs*8, skv, d] -> transpose
+    # -> [bs*8, d, skv] as a NON-CONTIGUOUS strided view.
+    # cuBLAS's batched GEMM (called by torch.bmm) fully supports non-contiguous
+    # input tensors with arbitrary strides — it reads via the stride descriptors
+    # without requiring a contiguous copy. This eliminates the Triton transpose
+    # kernel for value_states entirely.
     vs_2d = value_states.reshape(n_bkv, seq_kv, HEAD_DIM)
-    if not vs_2d.is_contiguous():
-        vs_2d = vs_2d.contiguous()
-
-    M = n_groups * seq_q
-    num_m_tiles = triton.cdiv(M, _FUSED_BLOCK_M)
-    num_n_tiles = triton.cdiv(seq_kv, _FUSED_BLOCK_N)
-    fused_grid  = n_bkv * num_m_tiles * num_n_tiles
-
-    _fused_transpose_bmm1_kernel[(fused_grid,)](
-        grad_attn_output,
-        vs_2d,
-        dP_dropped_2d,
-        bs, seq_q, n_heads, n_kv_heads, n_groups, seq_kv,
-        HEAD_DIM=HEAD_DIM,
-        BLOCK_M=_FUSED_BLOCK_M,
-        BLOCK_N=_FUSED_BLOCK_N,
-        BLOCK_K=_FUSED_BLOCK_K,
-        num_warps=4,
-        num_stages=3,
-    )
+    vs_T_strided = vs_2d.transpose(-2, -1)  # [bs*8, d, skv], non-contiguous strided view
 
     # ── Step 3: Prepare BMM2 input ────────────────────────────────────────────
     P_dropped_2d = attn_weights_dropped.reshape(n_bkv, n_groups * seq_q, seq_kv)
@@ -388,16 +205,31 @@ def custom_kernel(data):
     dP_dropped_flat = dP_dropped_2d.reshape(total_rows, seq_kv)
 
     # ── Shape-adaptive dispatch ───────────────────────────────────────────────
+    # For small workloads, skip multi-stream overhead (stream fork/join/sync cost
+    # can exceed the benefit of overlapping two independent BMMs).
     workload_size = bs * seq_q * seq_kv * n_heads
     use_streams = (workload_size >= _STREAM_THRESHOLD)
 
     if use_streams:
+        # ── Step 4a: Launch both BMMs concurrently on separate streams ────────
         default_stream = torch.cuda.current_stream()
         _start_event.record(default_stream)
 
-        # Stream A: softmax-bwd (BMM1 already done above)
+        # Stream A: BMM1 → softmax-bwd
         with torch.cuda.stream(_stream_a):
             _stream_a.wait_event(_start_event)
+            # BMM1: [bs*8, 10*sq, d] @ [bs*8, d, skv] -> [bs*8, 10*sq, skv]
+            # vs_T_strided is non-contiguous; cuBLAS handles strided B natively
+            torch.bmm(dO_2d, vs_T_strided, out=dP_dropped_2d)
+
+        # Stream B: BMM2
+        with torch.cuda.stream(_stream_b):
+            _stream_b.wait_event(_start_event)
+            # BMM2: [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
+            torch.bmm(P_dropped_2d_T, dO_2d, out=dV_flat)
+
+        # ── Step 5a: Softmax-bwd on stream A (overlaps with BMM2 on stream B) ─
+        with torch.cuda.stream(_stream_a):
             _softmax_bwd_kernel[(grid_size,)](
                 dP_dropped_flat,
                 attn_weights_flat,
@@ -412,18 +244,18 @@ def custom_kernel(data):
                 num_warps=4,
             )
 
-        # Stream B: BMM2
-        with torch.cuda.stream(_stream_b):
-            _stream_b.wait_event(_start_event)
-            torch.bmm(P_dropped_2d_T, dO_2d, out=dV_flat)
-
+        # ── Step 6a: Sync both streams back to the default stream ─────────────
         _event_a.record(_stream_a)
         _event_b.record(_stream_b)
         default_stream.wait_event(_event_a)
         default_stream.wait_event(_event_b)
 
     else:
-        # Sequential path for small workloads
+        # ── Step 4b: Sequential path for small workloads ──────────────────────
+        # BMM1: [bs*8, 10*sq, d] @ [bs*8, d, skv] -> [bs*8, 10*sq, skv]
+        torch.bmm(dO_2d, vs_T_strided, out=dP_dropped_2d)
+
+        # Softmax-bwd
         _softmax_bwd_kernel[(grid_size,)](
             dP_dropped_flat,
             attn_weights_flat,
@@ -437,6 +269,8 @@ def custom_kernel(data):
             ROWS_PER_CTA=ROWS_PER_CTA,
             num_warps=4,
         )
+
+        # BMM2: [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
         torch.bmm(P_dropped_2d_T, dO_2d, out=dV_flat)
 
     # ── Step 7: Reshape outputs ────────────────────────────────────────────────

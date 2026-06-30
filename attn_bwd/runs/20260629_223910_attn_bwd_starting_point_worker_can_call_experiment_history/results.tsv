@@ -1,0 +1,27 @@
+experiment	agent_iteration	commit	time_us	status	description
+1	0	HEAD	3429.35	keep	Baseline 'starting_point' — initial benchmark
+2	1	HEAD	0.00	crash	**
+3	2	HEAD	2067.92	keep	** Replaced the baseline with a `torch.compile`-wrapped implementation that:
+4	3	HEAD	0.00	crash	** Two Triton kernels replacing the `torch.compile` baseline:
+5	4	HEAD	0.00	crash	** Two Triton kernels replacing the `torch.compile` baseline:
+6	5	HEAD	621.16	keep	Two Triton kernels replacing elementwise/reduction PyTorch ops:
+7	6	HEAD	5059.54	discard	** Replaced the two-step process (torch.matmul BMM1 → Triton softmax-bwd) with a single `_fused_bmm1
+8	7	HEAD	752.86	discard	**
+9	8	HEAD	724.72	discard	**
+10	9	HEAD	597.81	keep	** The fallback proposal — made the softmax-bwd Triton kernel explicitly single-pass by:
+11	10	HEAD	573.06	keep	**
+12	11	HEAD	597.09	discard	** Replaced the single `_softmax_bwd_kernel` with three kernels:
+13	12	HEAD	436.23	keep	** Replaced the old BMM1 path (`dO_grouped [bs,8,10,sq,d] @ vs_T [bs,8,1,d,skv]` with 5D broadcast) 
+14	13	HEAD	426.75	keep	** Replaced the 1D grid `(total_rows,)` softmax-bwd kernel with a row-batched version using `ROWS_PE
+15	14	HEAD	424.41	keep	** Added `torch.cuda.Stream` pipelining:
+16	15	HEAD	5264.45	discard	** Added `_fused_bmm1_softmax_bwd` Triton kernel that:
+17	16	HEAD	1058.75	discard	** Added a `_cuda_graph_cache` dictionary keyed on `(bs, seq_q, seq_kv)`. On first call with a given
+18	17	HEAD	491.03	discard	Replaced the `submission.py` (which had the broken CUDA-graph approach from experiment #17) with the
+19	18	HEAD	398.66	keep	** Added `_transpose_sq_heads_kernel` — a Triton kernel that:
+20	19	HEAD	5143.75	discard	** Replaced the `_softmax_bwd_kernel` + separate BMM1 path with a new `_fused_bmm1_softmax_bwd_kerne
+21	20	HEAD	388.64	keep	1. Added `_stream_a`, `_stream_b`, `_start_event`, `_event_a`, `_event_b` as module-level globals, i
+22	21	HEAD	388.71	discard	Worker implementation
+23	22	HEAD	379.40	keep	**
+24	23	HEAD	379.11	keep	Worker implementation
+25	24	HEAD	401.46	discard	**
+26	25	HEAD	547.61	discard	** Added `_fused_transpose_bmm1_kernel` — a tiled GEMM Triton kernel that reads `grad_attn_output` a
