@@ -17,10 +17,9 @@ Strategy:
      - GEMM2 (dV) on stream2, independent: overlaps with GEMM1 + softmax-bwd
      This hides GEMM2's latency behind the GEMM1->softmax-bwd chain.
 
-  4. torch.compile softmax-backward with max-autotune: fuse dropout application and
-     softmax-bwd elementwise ops into a single kernel launch using max-autotune mode.
-     This avoids the Triton kernel's multi-pass HBM pattern and lets the compiler
-     pick the best tiling/fusion strategy.
+  4. torch.compile softmax-backward: fuse dropout application and softmax-bwd elementwise
+     ops into a single kernel launch using reduce-overhead mode with CUDA graphs.
+     This avoids the Triton kernel's multi-pass HBM pattern.
 
 custom_kernel(data) receives:
     data = (grad_attn_output, attn_weights, attn_weights_dropped,
@@ -78,11 +77,10 @@ def _softmax_bwd_fn(dP_raw, P, dropout_mask, inv_keep_prob):
 
 
 # Compile the softmax backward function for kernel fusion
-# Use max-autotune so the compiler picks best tiling/fusion for elementwise+reduce ops
 _softmax_bwd_compiled = torch.compile(
     _softmax_bwd_fn,
     fullgraph=True,
-    mode="max-autotune",
+    mode="reduce-overhead",
 )
 
 

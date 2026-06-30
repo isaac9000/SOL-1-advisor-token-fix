@@ -12,15 +12,12 @@ Strategy:
              compute [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
              This directly gives dV summed over groups -- no separate reduction!
 
-  3. Dependency-aware stream scheduling:
-     - GEMM1 (dP) on stream1 -> softmax-bwd on stream1 (serial: dS depends on dP)
-     - GEMM2 (dV) on stream2, independent: overlaps with GEMM1 + softmax-bwd
-     This hides GEMM2's latency behind the GEMM1->softmax-bwd chain.
+  3. Stream parallelism: launch GEMM1 (dP) and GEMM2 (dV) on separate CUDA streams
+     so they overlap in execution. Both are independent computations.
 
-  4. torch.compile softmax-backward with max-autotune: fuse dropout application and
-     softmax-bwd elementwise ops into a single kernel launch using max-autotune mode.
-     This avoids the Triton kernel's multi-pass HBM pattern and lets the compiler
-     pick the best tiling/fusion strategy.
+  4. torch.compile softmax-backward: fuse dropout application and softmax-bwd elementwise
+     ops into a single kernel launch using reduce-overhead mode with CUDA graphs.
+     This avoids the Triton kernel's multi-pass HBM pattern.
 
 custom_kernel(data) receives:
     data = (grad_attn_output, attn_weights, attn_weights_dropped,
@@ -47,7 +44,7 @@ NUM_KEY_VALUE_HEADS = 8
 HEAD_DIM = 128
 N_GROUPS = 10
 
-# Pre-create CUDA streams for overlapping computation
+# Pre-create CUDA streams for overlapping the two independent GEMMs
 _stream1 = None
 _stream2 = None
 
@@ -78,11 +75,10 @@ def _softmax_bwd_fn(dP_raw, P, dropout_mask, inv_keep_prob):
 
 
 # Compile the softmax backward function for kernel fusion
-# Use max-autotune so the compiler picks best tiling/fusion for elementwise+reduce ops
 _softmax_bwd_compiled = torch.compile(
     _softmax_bwd_fn,
     fullgraph=True,
-    mode="max-autotune",
+    mode="reduce-overhead",
 )
 
 
@@ -120,41 +116,39 @@ def custom_kernel(data):
     dP_gqa = torch.empty((bs * n_kv_heads, n_groups * seq_q, seq_kv), dtype=torch.bfloat16, device=device)
     dV_gqa = torch.empty((bs * n_kv_heads, seq_kv, d), dtype=torch.bfloat16, device=device)
 
-    # Prepare softmax-bwd inputs (make contiguous before launching async work)
-    P_attn = attn_weights.contiguous()   # [bs, 80, sq, skv] bfloat16
-    dmask  = dropout_mask.contiguous()   # [bs, 80, sq, skv] bool
-    inv_keep = 1.0 / (1.0 - attention_dropout) if attention_dropout > 0.0 else 1.0
-
     # Get the two streams
     stream1, stream2 = _get_streams()
     current_stream = torch.cuda.current_stream(device)
 
-    # ---- GEMM 2 (BF16): dV = P_dropped_gqa^T @ dO_gqa on stream2 (independent) ----
-    # Launch FIRST so it can run concurrently with GEMM1 + softmax-bwd on stream1
-    with torch.cuda.stream(stream2):
-        stream2.wait_stream(current_stream)
-        # [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
-        torch.bmm(P_dropped_gqa.transpose(-2, -1), dO_gqa, out=dV_gqa)
-
     # ---- GEMM 1 (BF16): dP = dO_gqa @ V_gqa^T on stream1 ----
-    # Then immediately chain softmax-bwd on stream1 (which depends on dP)
     with torch.cuda.stream(stream1):
         stream1.wait_stream(current_stream)
         # [bs*8, 10*sq, d] @ [bs*8, d, skv] -> [bs*8, 10*sq, skv]
         torch.bmm(dO_gqa, V_gqa.transpose(-2, -1), out=dP_gqa)
 
-        # Reshape dP_gqa back to [bs, 80, sq, skv] — still on stream1
-        dP_raw = dP_gqa.view(bs, n_kv_heads, n_groups, seq_q, seq_kv) \
-                       .reshape(bs, n_heads, seq_q, seq_kv)  # [bs, 80, sq, skv] BF16
+    # ---- GEMM 2 (BF16): dV = P_dropped_gqa^T @ dO_gqa on stream2 ----
+    with torch.cuda.stream(stream2):
+        stream2.wait_stream(current_stream)
+        # [bs*8, skv, 10*sq] @ [bs*8, 10*sq, d] -> [bs*8, skv, d]
+        torch.bmm(P_dropped_gqa.transpose(-2, -1), dO_gqa, out=dV_gqa)
 
-        # ---- Softmax backward on stream1 (concurrent with GEMM2 on stream2) ----
-        dS = _softmax_bwd_compiled(dP_raw, P_attn, dmask, inv_keep)
-
-    # Synchronize both streams back to current stream before returning results
+    # Synchronize both streams back to current stream before using results
     current_stream.wait_stream(stream1)
     current_stream.wait_stream(stream2)
 
+    # Reshape dP_gqa back to [bs, 80, sq, skv]
+    dP_raw = dP_gqa.view(bs, n_kv_heads, n_groups, seq_q, seq_kv) \
+                   .reshape(bs, n_heads, seq_q, seq_kv)  # [bs, 80, sq, skv] BF16
+
     # Reshape dV to [bs, 8, skv, d]
     dV = dV_gqa.view(bs, n_kv_heads, seq_kv, d).to(torch.bfloat16)
+
+    # ---- torch.compile softmax backward: fused elementwise ops ----
+    P_attn = attn_weights.contiguous()   # [bs, 80, sq, skv] bfloat16
+    dmask  = dropout_mask.contiguous()   # [bs, 80, sq, skv] bool
+
+    inv_keep = 1.0 / (1.0 - attention_dropout) if attention_dropout > 0.0 else 1.0
+
+    dS = _softmax_bwd_compiled(dP_raw, P_attn, dmask, inv_keep)
 
     return dS, dV
